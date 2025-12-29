@@ -1,9 +1,11 @@
+import argparse
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from hgt_model import HierarchicalGravityTransformer
 
-def train():
+def train(epochs):
     # 1. Data Preparation (Toy Character-level LM)
     text = "hello world! this is a hierarchical gravity transformer proof of concept."
     chars = sorted(list(set(text)))
@@ -23,7 +25,6 @@ def train():
     num_layers = 4
     num_heads = 8
     mlp_dim = 256
-    epochs = 5000
     log_interval = 100
     generate_len = 200
     
@@ -70,15 +71,26 @@ def train():
     # 4. Inference
     model.eval()
     with torch.no_grad():
+        max_seq_len = model.coord_emb.num_embeddings
         test_input = x[:, :5] # "hello"
         generated = test_input.tolist()[0]
         for _ in range(generate_len):
-            inp = torch.tensor(generated, device=device).unsqueeze(0)
-            logits = model(inp)
+            inp = torch.tensor(generated[-max_seq_len:], device=device).unsqueeze(0)
+            seq_len = inp.size(1)
+            mask = torch.tril(torch.ones(seq_len, seq_len, device=device)).unsqueeze(0).unsqueeze(0)
+            logits = model(inp, mask=mask)
             next_token = torch.argmax(logits[:, -1, :], dim=-1).item()
             generated.append(next_token)
             
         print("Generated text:", "".join([ix_to_char[i] for i in generated]))
 
 if __name__ == "__main__":
-    train()
+    parser = argparse.ArgumentParser(description="Train HGT on toy data.")
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=5000,
+        help="Number of training epochs.",
+    )
+    args = parser.parse_args()
+    train(args.epochs)
