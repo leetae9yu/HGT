@@ -25,7 +25,7 @@ class GravityAttention(nn.Module):
 
         self.v_proj = nn.Linear(hidden_dim, hidden_dim)
         self.coord_proj_attn = nn.Linear(coord_dim, num_heads * head_coord_dim)
-        self.coord_proj_next = nn.Linear(coord_dim, coord_dim)
+        self.coord_proj_next = nn.Linear(hidden_dim, coord_dim)
         self.out_proj = nn.Linear(hidden_dim, hidden_dim)
         
         self.gamma = nn.Parameter(torch.zeros(1, num_heads, 1, 1)) # Initialize with 0 -> Softplus(0) = log(2)
@@ -83,7 +83,7 @@ class GravityAttention(nn.Module):
         updated_hidden = self.out_proj(attn_output)
 
         # Coordinate Evolution
-        updated_coords = self.coord_proj_next(coordinates)
+        updated_coords = self.coord_proj_next(hidden_states)
 
         if return_stats:
             return updated_hidden, updated_coords, stats

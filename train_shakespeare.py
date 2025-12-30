@@ -58,7 +58,7 @@ DEFAULT_CONFIG = {
     "batch_size": 64,
     "block_size": 256,
     "max_steps": 5000,
-    "eval_interval": 200,
+    "eval_interval": 100,
     "eval_iters": 50,
     "learning_rate": 3e-4,
     "grad_clip": 1.0,
