@@ -68,6 +68,7 @@ DEFAULT_CONFIG = {
     "num_heads": 8,
     "mlp_dim": 1024,
     "dropout": 0.1,
+    "noise_scale": 0.01,
 }
 
 

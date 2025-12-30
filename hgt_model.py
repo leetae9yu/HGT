@@ -12,7 +12,7 @@ class GravityAttention(nn.Module):
         coord_dim: int, 
         num_heads: int, 
         head_coord_dim: int = 16,
-        dropout: float = 0.1
+        dropout: float = 0.1,
     ):
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -104,7 +104,7 @@ class FeedForward(nn.Module):
         return self.net(x)
 
 class HGTBlock(nn.Module):
-    def __init__(self, hidden_dim, coord_dim, num_heads, mlp_dim, dropout=0.1):
+    def __init__(self, hidden_dim, coord_dim, num_heads, mlp_dim, dropout=0.1, noise_scale=0.01):
         super().__init__()
         self.attn = GravityAttention(hidden_dim, coord_dim, num_heads, dropout=dropout)
         self.ffn = FeedForward(hidden_dim, mlp_dim, dropout=dropout)
@@ -114,6 +114,7 @@ class HGTBlock(nn.Module):
         
         # Coordinate Evolution Norm (optional, but good for stability)
         self.coord_norm = nn.LayerNorm(coord_dim)
+        self.noise_scale = noise_scale
 
     def forward(self, h, z, mask=None, return_stats=False):
         # Attention + Residual
@@ -127,7 +128,13 @@ class HGTBlock(nn.Module):
         h = h + self.ffn(self.norm2(h))
         
         # Coordinate Update (Residual + Norm)
-        z = self.coord_norm(z + z_next)
+        if self.training and self.noise_scale > 0:
+            # z와 같은 크기의 정규분포 노이즈 생성
+            noise = torch.randn_like(z) * self.noise_scale
+            z = self.coord_norm(z + z_next + noise)
+        else:
+            # 평가(Eval) 시에는 노이즈 없이 정석대로 이동
+            z = self.coord_norm(z + z_next)
         
         if return_stats:
             return h, z, stats
@@ -143,7 +150,8 @@ class HierarchicalGravityTransformer(nn.Module):
         num_heads, 
         mlp_dim, 
         max_seq_len=512, 
-        dropout=0.1
+        dropout=0.1,
+        noise_scale=0.01,
     ):
         super().__init__()
         self.token_emb = nn.Embedding(num_tokens, hidden_dim)
@@ -151,7 +159,7 @@ class HierarchicalGravityTransformer(nn.Module):
         self.coord_emb = nn.Embedding(max_seq_len, coord_dim)
         
         self.layers = nn.ModuleList([
-            HGTBlock(hidden_dim, coord_dim, num_heads, mlp_dim, dropout)
+            HGTBlock(hidden_dim, coord_dim, num_heads, mlp_dim, dropout, noise_scale=noise_scale)
             for _ in range(num_layers)
         ])
         
