@@ -22,76 +22,51 @@ This document defines the autonomous agents and personas operating within the HG
 
 ---
 
-## 🎯 Current Mission: TinyShakespeare Integration & Automation
+## 🎯 Current Mission: Physics-Informed Regularization (Repulsion & Determinism)
 
-**Objective**: Establish a robust, automated training pipeline for the HGT model using the **TinyShakespeare** dataset.
+**Objective**: Mitigate mode collapse and overfitting by replacing stochastic noise (Langevin Dynamics) with deterministic repulsive forces (Pauli Exclusion Principle).
 
-**Context - TinyShakespeare Dataset**:
-- **Description**: A concatenation of Shakespeare's plays, commonly used for character-level language modeling benchmarks.
-- **Source**: `https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt`
-- **Specs**: ~1.1MB file size, approx. 40,000 lines.
-- **Expected Vocabulary**: ~65 unique characters (alphanumeric + punctuation).
-- **Goal**: The HGT model should learn to generate Shakespeare-like text by training on this data at the character level.
+**Context**:
+- **Problem**: The HGT model exhibits signs of mode collapse (over-clustering) and overfitting (gap > 0.2) in the latent space.
+- **Solution**: Remove the current random noise injection and implement a repulsive potential energy term to force particles to maintain distance, creating a more structured manifold.
 
 ### Detailed Assignments
 
-#### **Phase 1: Data Acquisition & Inspection**
-
-**[Gemini]**
-1.  **Implement `prepare_data.py`**:
-    -   Create a script to download `input.txt` from the source URL.
-    -   Save it to a local `data/` directory (create if not exists).
-    -   Print basic success messages.
+#### **Phase 4: Code Refactoring & Logic Implementation**
 
 **[Codex]**
-1.  **Dataset Analysis**:
-    -   Once downloaded, analyze `data/input.txt`.
-    -   **Task**: Calculate and report:
-        -   Total file size (bytes).
-        -   Total character count.
-        -   Unique vocabulary size (ensure it matches expectation of ~65).
-        -   Top 5 most frequent characters.
-    -   **Output**: Confirm data integrity before training begins.
+1.  **Modify `hgt_model.py` (Remove Noise & Expose Coordinates)**:
+    -   **Remove Noise Logic**:
+        -   Remove `noise_scale` from `HGTBlock.__init__` and `HierarchicalGravityTransformer.__init__`.
+        -   In `HGTBlock.forward`, remove `torch.randn_like` logic. Ensure coordinate update is deterministic: `z = self.coord_norm(z + z_next)`.
+    -   **Expose Final Coordinates**:
+        -   Update `HierarchicalGravityTransformer.forward` to accept `return_last_coords=False`.
+        -   Return `(logits, z)` tuple when this flag is `True`.
 
-#### **Phase 2: Pipeline Integration & Configuration**
+2.  **Modify `train_shakespeare.py` (Add Repulsion Loss)**:
+    -   **Implement Loss Function**:
+        -   Create `compute_repulsion_loss(z)`: Calculate pairwise Euclidean distances (`torch.cdist`), apply identity mask, and compute potential energy ($E \propto 1/r$).
+    -   **Update Training Loop**:
+        -   Define `lambda_repulsion = 0.05` in `main()`.
+        -   Call model with `return_last_coords=True`.
+        -   Compute `rep_loss` and add to total `loss`: `loss = task_loss + lambda_repulsion * rep_loss`.
+    -   **Update Evaluation**:
+        -   Adjust `estimate_loss` to handle the new return tuple signature.
 
-**[Gemini]**
-1.  **Update `train_shakespeare.py`**:
-    -   Import/Call `prepare_data.py` to ensure data exists before training.
-    -   **Refactor**: Move hardcoded hyperparameters (e.g., `batch_size`, `block_size`, `learning_rate`) into a clearly defined configuration block or use `argparse`.
-    -   **Dynamic Vocab**: Ensure the model's `num_tokens` is set dynamically based on the actual file's vocabulary, not a hardcoded number.
-
-**[Codex]**
-1.  **Hyperparameter Review**:
-    -   Based on the **Dataset Analysis**, review the configuration in `train_shakespeare.py`.
-    -   **Check**: Is `max_seq_len` (block size) appropriate for the average line length of Shakespeare? (Usually ~256 is good).
-    -   **Check**: Are `hidden_dim` and `num_layers` sufficient for the dataset complexity without overfitting immediately?
-
-#### **Phase 3: Execution & Verification**
+#### **Phase 5: Validation & Tuning**
 
 **[Gemini]**
-1.  **Run Training**: Execute the pipeline.
-2.  **Monitor**: Observe the first 100 iterations.
-3.  **Artifact Check**: Ensure `checkpoints/shakespeare.pt` is created.
+1.  **Execution**: Run the updated training script.
+2.  **Monitoring**:
+    -   Check if `Repulsion Loss` starts at a reasonable magnitude (not exploding).
+    -   Verify that the Train/Val loss gap reduces compared to the previous noisy run.
+3.  **Visual Check**: (Optional) Generate a 3D plot to confirm particles are spreading out.
 
 ---
 
 ## Agent Logs
 
 ### [Gemini] Plan Update
-**Date**: 2025-12-29
-**Action**: Detailed planning for TinyShakespeare integration.
-**Rationale**: Added specific analysis steps for Codex to ensure the model configuration matches the physical properties of the downloaded dataset (vocabulary, length).
-
-### [Codex] Code Review Report
-**Date**: 2025-12-29
-**Target**: Full Codebase (`hgt_model.py`, `train.py`)
-**Context**: Hierarchical Gravity Transformer Research
-
-#### Summary
-The implementation generally aligns with the architectural goals defined in `GEMINI.md`. The **Gravity Attention** mechanism is correctly implemented using a Gaussian kernel structure.
-
-#### Key Findings
-1.  **Resolved**: Critical Bug - Missing Causal Mask in `train.py`. Fixed and verified.
-2.  **Verified**: Gravity Attention mechanism $\propto \exp(-\gamma ||z_i - z_j||^2)$ is correct.
-3.  **Status**: Ready for data integration.
+**Date**: 2025-12-30
+**Action**: Initiating physics-informed regularization strategy.
+**Rationale**: Previous noise-based approach led to unstable convergence. Switching to deterministic repulsion to enforce manifold structure directly.

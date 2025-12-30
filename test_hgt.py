@@ -42,17 +42,17 @@ def test_hgt_model_forward():
 
 def test_gravity_attention_masking():
     B, L, D, Z, H = 1, 4, 16, 4, 2
-    model = GravityAttention(hidden_dim=D, coord_dim=Z, num_heads=H)
+    model = GravityAttention(hidden_dim=D, coord_dim=Z, num_heads=H, dropout=0.0)
+    model.eval()
     h = torch.randn(B, L, D)
     z = torch.randn(B, L, Z)
     
-    # Mask out the last two tokens
-    mask = torch.tensor([[[[1, 1, 0, 0]]]]) # [B, 1, 1, L]
+    # Causal mask to prevent attending to future tokens
+    mask = torch.tril(torch.ones(L, L)).unsqueeze(0).unsqueeze(0)
     
-    h_new, z_new = model(h, z, mask=mask)
-    
-    # This is a bit hard to verify exactly without looking at weights,
-    # but we can check if it runs without error.
+    h_new, z_new, attn_weights = model(h, z, mask=mask, return_attn=True)
+    future_mask = torch.triu(torch.ones(L, L, dtype=torch.bool), diagonal=1)
+    assert attn_weights[..., future_mask].max().item() <= 1e-6
     assert h_new.shape == (B, L, D)
 
 if __name__ == "__main__":

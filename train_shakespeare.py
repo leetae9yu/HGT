@@ -32,10 +32,23 @@ def build_causal_mask(seq_len, device):
 
 def get_batch(data, block_size, batch_size, device):
     max_start = len(data) - block_size - 1
+    if max_start <= 0:
+        raise ValueError(
+            f"Dataset too small for block_size={block_size} (len={len(data)})."
+        )
     ix = torch.randint(0, max_start, (batch_size,))
     x = torch.stack([data[i : i + block_size] for i in ix])
     y = torch.stack([data[i + 1 : i + block_size + 1] for i in ix])
     return x.to(device), y.to(device)
+
+
+def compute_repulsion_loss(z, eps=1e-6):
+    dists = torch.cdist(z, z, p=2)
+    seq_len = dists.size(-1)
+    eye = torch.eye(seq_len, device=z.device, dtype=torch.bool).unsqueeze(0)
+    inv_dist = 1.0 / (dists + eps)
+    inv_dist = inv_dist.masked_fill(eye, 0.0)
+    return inv_dist.mean()
 
 
 @torch.no_grad()
@@ -45,6 +58,8 @@ def estimate_loss(model, data, block_size, batch_size, device, mask, criterion, 
     for _ in range(eval_iters):
         x, y = get_batch(data, block_size, batch_size, device)
         logits = model(x, mask=mask)
+        if isinstance(logits, tuple):
+            logits = logits[0]
         loss = criterion(logits.view(-1, logits.size(-1)), y.view(-1))
         losses.append(loss.item())
     model.train()
@@ -68,7 +83,6 @@ DEFAULT_CONFIG = {
     "num_heads": 8,
     "mlp_dim": 1024,
     "dropout": 0.1,
-    "noise_scale": 0.01,
 }
 
 
@@ -107,6 +121,7 @@ def main():
     eval_iters = args.eval_iters
     learning_rate = args.learning_rate
     grad_clip = args.grad_clip
+    lambda_repulsion = 0.05
 
     hidden_dim = args.hidden_dim
     coord_dim = args.coord_dim
@@ -151,13 +166,17 @@ def main():
         start_step = checkpoint.get("iter", 0)
         best_val = checkpoint.get("best_val", best_val)
 
-    os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+    checkpoint_dir = os.path.dirname(checkpoint_path)
+    if checkpoint_dir:
+        os.makedirs(checkpoint_dir, exist_ok=True)
 
     t0 = time.time()
     for step in range(start_step, max_steps):
         x, y = get_batch(train_data, block_size, batch_size, device)
-        logits = model(x, mask=mask)
-        loss = criterion(logits.view(-1, vocab_size), y.view(-1))
+        logits, z = model(x, mask=mask, return_last_coords=True)
+        task_loss = criterion(logits.view(-1, vocab_size), y.view(-1))
+        rep_loss = compute_repulsion_loss(z)
+        loss = task_loss + lambda_repulsion * rep_loss
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -189,6 +208,7 @@ def main():
             print(
                 f"step {step + 1}/{max_steps} "
                 f"train_loss={train_loss:.4f} val_loss={val_loss:.4f} "
+                f"rep_loss={rep_loss:.4f} "
                 f"elapsed={elapsed:.1f}s"
             )
 

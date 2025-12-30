@@ -32,7 +32,7 @@ class GravityAttention(nn.Module):
         self.softplus = nn.Softplus()
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, hidden_states, coordinates, mask=None, return_stats=False):
+    def forward(self, hidden_states, coordinates, mask=None, return_stats=False, return_attn=False):
         batch_size, seq_len, _ = hidden_states.size()
 
         # Value Projection
@@ -85,8 +85,12 @@ class GravityAttention(nn.Module):
         # Coordinate Evolution
         updated_coords = self.coord_proj_next(hidden_states)
 
+        if return_stats and return_attn:
+            return updated_hidden, updated_coords, stats, attn_weights
         if return_stats:
             return updated_hidden, updated_coords, stats
+        if return_attn:
+            return updated_hidden, updated_coords, attn_weights
         return updated_hidden, updated_coords
 
 class FeedForward(nn.Module):
@@ -104,7 +108,7 @@ class FeedForward(nn.Module):
         return self.net(x)
 
 class HGTBlock(nn.Module):
-    def __init__(self, hidden_dim, coord_dim, num_heads, mlp_dim, dropout=0.1, noise_scale=0.01):
+    def __init__(self, hidden_dim, coord_dim, num_heads, mlp_dim, dropout=0.1):
         super().__init__()
         self.attn = GravityAttention(hidden_dim, coord_dim, num_heads, dropout=dropout)
         self.ffn = FeedForward(hidden_dim, mlp_dim, dropout=dropout)
@@ -114,7 +118,6 @@ class HGTBlock(nn.Module):
         
         # Coordinate Evolution Norm (optional, but good for stability)
         self.coord_norm = nn.LayerNorm(coord_dim)
-        self.noise_scale = noise_scale
 
     def forward(self, h, z, mask=None, return_stats=False):
         # Attention + Residual
@@ -126,15 +129,8 @@ class HGTBlock(nn.Module):
         
         # FFN + Residual
         h = h + self.ffn(self.norm2(h))
-        
         # Coordinate Update (Residual + Norm)
-        if self.training and self.noise_scale > 0:
-            # z와 같은 크기의 정규분포 노이즈 생성
-            noise = torch.randn_like(z) * self.noise_scale
-            z = self.coord_norm(z + z_next + noise)
-        else:
-            # 평가(Eval) 시에는 노이즈 없이 정석대로 이동
-            z = self.coord_norm(z + z_next)
+        z = self.coord_norm(z + z_next)
         
         if return_stats:
             return h, z, stats
@@ -149,9 +145,8 @@ class HierarchicalGravityTransformer(nn.Module):
         num_layers, 
         num_heads, 
         mlp_dim, 
-        max_seq_len=512, 
+        max_seq_len=512,
         dropout=0.1,
-        noise_scale=0.01,
     ):
         super().__init__()
         self.token_emb = nn.Embedding(num_tokens, hidden_dim)
@@ -159,15 +154,25 @@ class HierarchicalGravityTransformer(nn.Module):
         self.coord_emb = nn.Embedding(max_seq_len, coord_dim)
         
         self.layers = nn.ModuleList([
-            HGTBlock(hidden_dim, coord_dim, num_heads, mlp_dim, dropout, noise_scale=noise_scale)
+            HGTBlock(hidden_dim, coord_dim, num_heads, mlp_dim, dropout)
             for _ in range(num_layers)
         ])
         
         self.norm = nn.LayerNorm(hidden_dim)
         self.head = nn.Linear(hidden_dim, num_tokens)
 
-    def forward(self, x, mask=None, return_stats=False):
+    def forward(self, x, mask=None, return_stats=False, return_last_coords=False):
         b, l = x.size()
+        max_seq_len = self.coord_emb.num_embeddings
+        if l > max_seq_len:
+            if self.training:
+                raise ValueError(
+                    f"Input sequence length {l} exceeds max_seq_len {max_seq_len} during training."
+                )
+            x = x[:, -max_seq_len:]
+            if mask is not None and mask.size(-1) >= max_seq_len:
+                mask = mask[..., -max_seq_len:, -max_seq_len:]
+            b, l = x.size()
         device = x.device
         
         # Initial states
@@ -192,7 +197,11 @@ class HierarchicalGravityTransformer(nn.Module):
                 key: torch.stack([s[key] for s in stats_list]).mean()
                 for key in stats_list[0].keys()
             }
+            if return_last_coords:
+                return logits, z, stack
             return logits, stack
+        if return_last_coords:
+            return logits, z
         return logits
 
 if __name__ == "__main__":
