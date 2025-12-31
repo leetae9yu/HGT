@@ -42,13 +42,31 @@ def get_batch(data, block_size, batch_size, device):
     return x.to(device), y.to(device)
 
 
-def compute_repulsion_loss(z, eps=1e-6):
+def compute_repulsion_loss(z, mass=None, alpha=2.0, min_dist=1e-3):
     dists = torch.cdist(z, z, p=2)
+    dists = torch.clamp(dists, min=min_dist)
+    inv_dist = dists.pow(alpha).reciprocal()
+
     seq_len = dists.size(-1)
-    eye = torch.eye(seq_len, device=z.device, dtype=torch.bool).unsqueeze(0)
-    inv_dist = 1.0 / (dists + eps)
-    inv_dist = inv_dist.masked_fill(eye, 0.0)
-    return inv_dist.mean()
+    pair_mask = torch.triu(
+        torch.ones(seq_len, seq_len, device=z.device, dtype=torch.bool), diagonal=1
+    )
+    if inv_dist.dim() == 3:
+        pair_mask = pair_mask.unsqueeze(0)
+
+    if mass is None:
+        mass_tensor = torch.ones(z.shape[:-1], device=z.device, dtype=z.dtype)
+    else:
+        mass_tensor = mass.to(z.device, dtype=z.dtype)
+        if mass_tensor.dim() == 1 and inv_dist.dim() == 3:
+            mass_tensor = mass_tensor.unsqueeze(0)
+
+    mass_products = mass_tensor.unsqueeze(-1) * mass_tensor.unsqueeze(-2)
+    pairwise = mass_products * inv_dist
+    pairwise = pairwise.masked_select(pair_mask)
+    if pairwise.numel() == 0:
+        return torch.tensor(0.0, device=z.device, dtype=z.dtype)
+    return pairwise.mean()
 
 
 @torch.no_grad()
@@ -112,6 +130,8 @@ def main():
 
     data_path = ensure_data(args.data_path)
     checkpoint_path = args.checkpoint_path
+    best_checkpoint_path = f"{checkpoint_path}_best.pt"
+    last_checkpoint_path = f"{checkpoint_path}_last.pt"
     resume = args.resume
 
     batch_size = args.batch_size
@@ -159,12 +179,15 @@ def main():
     start_step = 0
     best_val = float("inf")
 
-    if resume and os.path.exists(checkpoint_path):
-        checkpoint = torch.load(checkpoint_path, map_location=device)
-        model.load_state_dict(checkpoint["model_state"])
-        optimizer.load_state_dict(checkpoint["optimizer_state"])
-        start_step = checkpoint.get("iter", 0)
-        best_val = checkpoint.get("best_val", best_val)
+    if resume:
+        for candidate in (last_checkpoint_path, best_checkpoint_path, checkpoint_path):
+            if os.path.exists(candidate):
+                checkpoint = torch.load(candidate, map_location=device)
+                model.load_state_dict(checkpoint["model_state"])
+                optimizer.load_state_dict(checkpoint["optimizer_state"])
+                start_step = checkpoint.get("iter", 0)
+                best_val = checkpoint.get("best_val", best_val)
+                break
 
     checkpoint_dir = os.path.dirname(checkpoint_path)
     if checkpoint_dir:
@@ -232,7 +255,7 @@ def main():
                         },
                         "vocab": {"stoi": stoi, "itos": itos},
                     },
-                    checkpoint_path,
+                    best_checkpoint_path,
                 )
 
     torch.save(
@@ -253,7 +276,7 @@ def main():
             },
             "vocab": {"stoi": stoi, "itos": itos},
         },
-        checkpoint_path,
+        last_checkpoint_path,
     )
 
 
