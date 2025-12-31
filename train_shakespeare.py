@@ -1,5 +1,6 @@
 import argparse
 import os
+import pickle
 import time
 
 import torch
@@ -44,30 +45,101 @@ def get_batch(data, block_size, batch_size, device):
 
 
 def compute_repulsion_loss(z, mass=None, alpha=2.0, min_dist=1e-3):
-    dists = torch.cdist(z, z, p=2)
-    dists = torch.clamp(dists, min=min_dist)
-    inv_dist = dists.pow(alpha).reciprocal()
+    if z.dim() == 2:
+        z = z.unsqueeze(0)
 
-    seq_len = dists.size(-1)
-    pair_mask = torch.triu(
-        torch.ones(seq_len, seq_len, device=z.device, dtype=torch.bool), diagonal=1
-    )
-    if inv_dist.dim() == 3:
-        pair_mask = pair_mask.unsqueeze(0)
+    dists = torch.cdist(z, z, p=2).clamp_min(min_dist)
+    denom = dists.pow(alpha)
 
     if mass is None:
         mass_tensor = torch.ones(z.shape[:-1], device=z.device, dtype=z.dtype)
     else:
         mass_tensor = mass.to(z.device, dtype=z.dtype)
-        if mass_tensor.dim() == 1 and inv_dist.dim() == 3:
+        if mass_tensor.dim() == 1:
             mass_tensor = mass_tensor.unsqueeze(0)
+        if mass_tensor.dim() == 3 and mass_tensor.size(-1) == 1:
+            mass_tensor = mass_tensor.squeeze(-1)
 
     mass_products = mass_tensor.unsqueeze(-1) * mass_tensor.unsqueeze(-2)
-    pairwise = mass_products * inv_dist
-    pairwise = pairwise.masked_select(pair_mask)
+    energy = mass_products / denom
+
+    seq_len = z.size(1)
+    pair_mask = torch.triu(
+        torch.ones(seq_len, seq_len, device=z.device, dtype=torch.bool), diagonal=1
+    ).unsqueeze(0)
+    pair_mask = pair_mask.expand_as(energy)
+
+    pairwise = energy.masked_select(pair_mask)
     if pairwise.numel() == 0:
         return torch.tensor(0.0, device=z.device, dtype=z.dtype)
     return pairwise.mean()
+
+
+PROBE_WORDS = {
+    "royalty": ["KING", "QUEEN", "PRINCE", "PRINCESS"],
+    "family": ["MOTHER", "FATHER", "SON", "DAUGHTER"],
+    "antonyms": ["LOVE", "HATE", "WAR", "PEACE"],
+}
+
+
+def encode_probe_words(stoi):
+    encoded = {}
+    for group, words in PROBE_WORDS.items():
+        valid_words = []
+        for word in words:
+            if all(ch in stoi for ch in word):
+                valid_words.append((word, encode(word, stoi)))
+        if valid_words:
+            encoded[group] = valid_words
+    return encoded
+
+
+def record_probe_snapshot(x, z, m, probe_words, itos, step, path):
+    records = []
+    batch, seq_len = x.size()
+    for b in range(batch):
+        seq = x[b]
+        for group, word_list in probe_words.items():
+            for word, token_ids in word_list:
+                word_len = token_ids.numel()
+                if word_len == 0 or word_len > seq_len:
+                    continue
+                token_ids = token_ids.to(seq.device)
+                for start in range(seq_len - word_len + 1):
+                    window = seq[start : start + word_len]
+                    if torch.equal(window, token_ids):
+                        coords = z[b, start : start + word_len].detach().cpu()
+                        masses = m[b, start : start + word_len].detach().cpu().squeeze(-1)
+                        chars = [
+                            itos[int(idx)] if int(idx) in itos else "<unk>"
+                            for idx in window
+                        ]
+                        for idx_in_word in range(word_len):
+                            records.append(
+                                {
+                                    "group": group,
+                                    "word": word,
+                                    "char": chars[idx_in_word],
+                                    "position": idx_in_word,
+                                    "coord": coords[idx_in_word].tolist(),
+                                    "mass": float(masses[idx_in_word]),
+                                }
+                            )
+    if not records:
+        return
+
+    snapshot = {"step": step, "records": records}
+    if os.path.exists(path):
+        try:
+            with open(path, "rb") as f:
+                history = pickle.load(f)
+        except Exception:
+            history = []
+    else:
+        history = []
+    history.append(snapshot)
+    with open(path, "wb") as f:
+        pickle.dump(history, f)
 
 
 @torch.no_grad()
@@ -135,6 +207,7 @@ def main():
     checkpoint_path = args.checkpoint_path
     best_checkpoint_path = f"{checkpoint_path}_best.pt"
     last_checkpoint_path = f"{checkpoint_path}_last.pt"
+    gravity_evolution_path = os.path.join("checkpoints", "gravity_evolution.pkl")
     resume = args.resume
 
     batch_size = args.batch_size
@@ -158,6 +231,7 @@ def main():
 
     text = read_text(data_path)
     _, stoi, itos = build_vocab(text)
+    probe_word_ids = encode_probe_words(stoi)
     vocab_size = len(stoi)
     data = encode(text, stoi)
 
@@ -197,13 +271,16 @@ def main():
     checkpoint_dir = os.path.dirname(checkpoint_path)
     if checkpoint_dir:
         os.makedirs(checkpoint_dir, exist_ok=True)
+    gravity_dir = os.path.dirname(gravity_evolution_path)
+    if gravity_dir:
+        os.makedirs(gravity_dir, exist_ok=True)
 
     t0 = time.time()
     for step in range(start_step, max_steps):
         x, y = get_batch(train_data, block_size, batch_size, device)
-        logits, z = model(x, mask=mask, return_last_coords=True)
+        logits, z, m = model(x, mask=mask, return_last_coords=True)
         task_loss = criterion(logits.view(-1, vocab_size), y.view(-1))
-        rep_loss = compute_repulsion_loss(z)
+        rep_loss = compute_repulsion_loss(z, mass=m)
         rep_loss_item = float(rep_loss.detach())
         loss = task_loss + lambda_repulsion * rep_loss
 
@@ -221,6 +298,16 @@ def main():
                 metadata=tokens_text,
                 global_step=step + 1,
             )
+            if probe_word_ids:
+                record_probe_snapshot(
+                    x.cpu(),
+                    z.cpu(),
+                    m.cpu(),
+                    probe_word_ids,
+                    itos,
+                    step + 1,
+                    gravity_evolution_path,
+                )
 
         if (step + 1) % eval_interval == 0:
             train_loss = estimate_loss(

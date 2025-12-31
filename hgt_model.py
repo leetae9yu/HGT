@@ -150,8 +150,10 @@ class HierarchicalGravityTransformer(nn.Module):
     ):
         super().__init__()
         self.token_emb = nn.Embedding(num_tokens, hidden_dim)
+        self.mass_emb = nn.Embedding(num_tokens, 1)
         # Coordinate embedding - can be learned or based on absolute positions
         self.coord_emb = nn.Embedding(max_seq_len, coord_dim)
+        self.mass_nonlinearity = nn.Softplus()
         
         self.layers = nn.ModuleList([
             HGTBlock(hidden_dim, coord_dim, num_heads, mlp_dim, dropout)
@@ -177,6 +179,7 @@ class HierarchicalGravityTransformer(nn.Module):
         
         # Initial states
         h = self.token_emb(x)
+        m = self.mass_nonlinearity(self.mass_emb(x))
         
         # Initial coordinates based on position
         pos = torch.arange(l, device=device).unsqueeze(0).expand(b, l)
@@ -198,10 +201,10 @@ class HierarchicalGravityTransformer(nn.Module):
                 for key in stats_list[0].keys()
             }
             if return_last_coords:
-                return logits, z, stack
+                return logits, z, m, stack
             return logits, stack
         if return_last_coords:
-            return logits, z
+            return logits, z, m
         return logits
 
 if __name__ == "__main__":

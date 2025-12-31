@@ -2,3 +2,6 @@ torch
 numpy
 pytest
 tensorboard
+matplotlib
+scikit-learn
+pillow

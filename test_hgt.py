@@ -55,5 +55,39 @@ def test_gravity_attention_masking():
     assert attn_weights[..., future_mask].max().item() <= 1e-6
     assert h_new.shape == (B, L, D)
 
+def test_repulsion_loss_stability():
+    from train_shakespeare import compute_repulsion_loss
+    # Case: Identical coordinates (r=0)
+    B, L, Z = 2, 4, 8
+    z = torch.zeros(B, L, Z)
+    loss = compute_repulsion_loss(z, min_dist=1e-3)
+    
+    assert not torch.isnan(loss)
+    assert not torch.isinf(loss)
+    assert loss > 0
+
+def test_hgt_return_signature():
+    num_tokens = 50
+    model = HierarchicalGravityTransformer(
+        num_tokens=num_tokens, 
+        hidden_dim=16, 
+        coord_dim=4, 
+        num_layers=1, 
+        num_heads=2, 
+        mlp_dim=32
+    )
+    x = torch.randint(0, num_tokens, (1, 5))
+    
+    # Standard return
+    logits = model(x)
+    assert isinstance(logits, torch.Tensor)
+    
+    # Return last coords and mass
+    logits, z, m = model(x, return_last_coords=True)
+    assert logits.shape == (1, 5, num_tokens)
+    assert z.shape == (1, 5, 4)
+    assert m.shape == (1, 5, 1)
+    assert (m >= 0).all()
+
 if __name__ == "__main__":
     pytest.main([__file__])
