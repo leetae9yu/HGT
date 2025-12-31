@@ -57,8 +57,27 @@ This document defines the autonomous agents and personas operating within the HG
 2.  **Checkpoint Verification**:
     -   **Test**: Create a temporary test (or modify `test_hgt.py`) to run a dummy training loop for 2 steps, trigger a "best" save, then a "final" save, and assert that two distinct files (`_best.pt`, `_last.pt`) exist and are loadable.
 
-3.  **Sanity Check**:
+    - **Sanity Check**:
     -   Run a short training session (`train_shakespeare.py --max-steps 50`) to verify loss scaling and logging output format.
+
+#### **Phase 8: Real-time Visualization & Monitoring**
+
+**[Gemini]**
+1.  **Setup Environment**:
+    -   Add `matplotlib` to `requirements.txt` and install it.
+
+2.  **Implement 3D Visualization (`train_shakespeare.py`)**:
+    -   **Goal**: Visualize the evolution of latent coordinates (`z`) in real-time during training.
+    -   **Action**:
+        -   Import `matplotlib.pyplot` and `mpl_toolkits.mplot3d`.
+        -   Create a `Visualizer` class or function that initializes a 3D figure.
+        -   In the training loop (every `eval_interval` or a specific `vis_interval`):
+            -   Extract `z` from the model forward pass.
+            -   If `coord_dim > 3`, project to 3D (using PCA or slicing).
+            -   Update the scatter plot with token positions.
+            -   Use `plt.draw()` and `plt.pause(0.01)` to render without blocking (or minimal blocking).
+        -   **Color Coding**: Optionally color points by token index or mass to show structure.
+
 
 ---
 

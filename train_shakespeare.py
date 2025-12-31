@@ -6,6 +6,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 - needed for 3D projection
+
 from hgt_model import HierarchicalGravityTransformer
 from prepare_data import ensure_data
 
@@ -69,6 +72,57 @@ def compute_repulsion_loss(z, mass=None, alpha=2.0, min_dist=1e-3):
     return pairwise.mean()
 
 
+class LatentVisualizer:
+    def __init__(self, coord_dim, max_points=512):
+        self.coord_dim = coord_dim
+        self.max_points = max_points
+        plt.ion()
+        self.fig = plt.figure()
+        self.ax = self.fig.add_subplot(111, projection="3d")
+        self.scatter = None
+
+    def _project(self, coords):
+        # coords: (..., seq_len, coord_dim)
+        if coords.size(-1) <= 3:
+            return coords
+        coords_centered = coords - coords.mean(dim=-2, keepdim=True)
+        try:
+            _, _, v = torch.pca_lowrank(coords_centered, q=3)
+            projected = coords_centered @ v[:, :3]
+        except RuntimeError:
+            projected = coords_centered[..., :3]
+        return projected
+
+    def update(self, z, tokens=None, title=None):
+        if z.dim() == 3:
+            coords = z[0]
+        else:
+            coords = z
+        coords = coords.detach().cpu()
+        coords3d = self._project(coords)
+        coords3d = coords3d[: self.max_points]
+        if coords3d.size(-1) < 3:
+            pad = torch.zeros(coords3d.size(0), 3 - coords3d.size(-1))
+            coords3d = torch.cat([coords3d, pad], dim=-1)
+        xs = coords3d[:, 0].numpy()
+        ys = coords3d[:, 1].numpy()
+        zs = coords3d[:, 2].numpy()
+
+        if tokens is not None:
+            colors = tokens.detach().cpu().flatten()[: coords3d.size(0)].numpy()
+        else:
+            colors = torch.arange(coords3d.size(0)).numpy()
+
+        self.ax.cla()
+        self.ax.scatter(xs, ys, zs, c=colors, cmap="viridis", s=16, alpha=0.85)
+        self.ax.set_xlabel("x")
+        self.ax.set_ylabel("y")
+        self.ax.set_zlabel("z")
+        self.ax.set_title(title or "Latent coordinates")
+        plt.draw()
+        plt.pause(0.01)
+
+
 @torch.no_grad()
 def estimate_loss(model, data, block_size, batch_size, device, mask, criterion, eval_iters):
     model.eval()
@@ -93,6 +147,7 @@ DEFAULT_CONFIG = {
     "max_steps": 5000,
     "eval_interval": 100,
     "eval_iters": 50,
+    "vis_interval": None,
     "learning_rate": 3e-4,
     "grad_clip": 1.0,
     "hidden_dim": 256,
@@ -114,6 +169,7 @@ def parse_args():
     parser.add_argument("--max-steps", type=int, default=DEFAULT_CONFIG["max_steps"])
     parser.add_argument("--eval-interval", type=int, default=DEFAULT_CONFIG["eval_interval"])
     parser.add_argument("--eval-iters", type=int, default=DEFAULT_CONFIG["eval_iters"])
+    parser.add_argument("--vis-interval", type=int, default=DEFAULT_CONFIG["vis_interval"])
     parser.add_argument("--learning-rate", type=float, default=DEFAULT_CONFIG["learning_rate"])
     parser.add_argument("--grad-clip", type=float, default=DEFAULT_CONFIG["grad_clip"])
     parser.add_argument("--hidden-dim", type=int, default=DEFAULT_CONFIG["hidden_dim"])
@@ -139,6 +195,7 @@ def main():
     max_steps = args.max_steps
     eval_interval = args.eval_interval
     eval_iters = args.eval_iters
+    vis_interval = args.vis_interval if args.vis_interval is not None else eval_interval
     learning_rate = args.learning_rate
     grad_clip = args.grad_clip
     lambda_repulsion = 0.05
@@ -175,6 +232,13 @@ def main():
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
     criterion = nn.CrossEntropyLoss()
     mask = build_causal_mask(block_size, device)
+    visualizer = None
+    if vis_interval and vis_interval > 0:
+        try:
+            visualizer = LatentVisualizer(coord_dim=coord_dim, max_points=block_size)
+        except Exception as exc:
+            print(f"Visualization disabled: {exc}")
+            vis_interval = 0
 
     start_step = 0
     best_val = float("inf")
@@ -205,6 +269,13 @@ def main():
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
+
+        if visualizer and (step + 1) % vis_interval == 0:
+            visualizer.update(
+                z,
+                tokens=x,
+                title=f"Latent coordinates @ step {step + 1}",
+            )
 
         if (step + 1) % eval_interval == 0:
             train_loss = estimate_loss(
