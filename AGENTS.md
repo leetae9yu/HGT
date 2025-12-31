@@ -64,19 +64,21 @@ This document defines the autonomous agents and personas operating within the HG
 
 **[Gemini]**
 1.  **Setup Environment**:
-    -   Add `matplotlib` to `requirements.txt` and install it.
+    -   Ensure `tensorboard` is available (usually included with PyTorch/Colab).
+    -   Remove `matplotlib` from visualization requirements if not needed for other plots.
 
-2.  **Implement 3D Visualization (`train_shakespeare.py`)**:
-    -   **Goal**: Visualize the evolution of latent coordinates (`z`) in real-time during training.
+2.  **Integrate TensorBoard (`train_shakespeare.py`)**:
+    -   **Goal**: Monitor training metrics and visualize high-dimensional latent space evolution using the TensorBoard Projector.
     -   **Action**:
-        -   Import `matplotlib.pyplot` and `mpl_toolkits.mplot3d`.
-        -   Create a `Visualizer` class or function that initializes a 3D figure.
-        -   In the training loop (every `eval_interval` or a specific `vis_interval`):
-            -   Extract `z` from the model forward pass.
-            -   If `coord_dim > 3`, project to 3D (using PCA or slicing).
-            -   Update the scatter plot with token positions.
-            -   Use `plt.draw()` and `plt.pause(0.01)` to render without blocking (or minimal blocking).
-        -   **Color Coding**: Optionally color points by token index or mass to show structure.
+        -   Import `from torch.utils.tensorboard import SummaryWriter`.
+        -   Initialize `writer = SummaryWriter(log_dir="runs/hgt_experiment")`.
+        -   **Scalar Logging**: Log `train_loss`, `val_loss`, and `rep_loss` every `eval_interval`.
+        -   **Embedding Visualization**:
+            -   In the training loop (every `vis_interval`):
+            -   Extract a batch of latent coordinates `z` (shape `[B, T, C]`) and tokens.
+            -   Flatten `z` to `[B*T, C]` and tokens to `[B*T]`.
+            -   Use `writer.add_embedding(mat=z, metadata=tokens_text, global_step=step)` to visualize the gravity space.
+            -   *Note*: This enables the "Projector" tab in TensorBoard for interactive 3D analysis.
 
 
 ---

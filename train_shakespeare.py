@@ -5,9 +5,7 @@ import time
 import torch
 import torch.nn as nn
 import torch.optim as optim
-
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 - needed for 3D projection
+from torch.utils.tensorboard import SummaryWriter
 
 from hgt_model import HierarchicalGravityTransformer
 from prepare_data import ensure_data
@@ -70,57 +68,6 @@ def compute_repulsion_loss(z, mass=None, alpha=2.0, min_dist=1e-3):
     if pairwise.numel() == 0:
         return torch.tensor(0.0, device=z.device, dtype=z.dtype)
     return pairwise.mean()
-
-
-class LatentVisualizer:
-    def __init__(self, coord_dim, max_points=512):
-        self.coord_dim = coord_dim
-        self.max_points = max_points
-        plt.ion()
-        self.fig = plt.figure()
-        self.ax = self.fig.add_subplot(111, projection="3d")
-        self.scatter = None
-
-    def _project(self, coords):
-        # coords: (..., seq_len, coord_dim)
-        if coords.size(-1) <= 3:
-            return coords
-        coords_centered = coords - coords.mean(dim=-2, keepdim=True)
-        try:
-            _, _, v = torch.pca_lowrank(coords_centered, q=3)
-            projected = coords_centered @ v[:, :3]
-        except RuntimeError:
-            projected = coords_centered[..., :3]
-        return projected
-
-    def update(self, z, tokens=None, title=None):
-        if z.dim() == 3:
-            coords = z[0]
-        else:
-            coords = z
-        coords = coords.detach().cpu()
-        coords3d = self._project(coords)
-        coords3d = coords3d[: self.max_points]
-        if coords3d.size(-1) < 3:
-            pad = torch.zeros(coords3d.size(0), 3 - coords3d.size(-1))
-            coords3d = torch.cat([coords3d, pad], dim=-1)
-        xs = coords3d[:, 0].numpy()
-        ys = coords3d[:, 1].numpy()
-        zs = coords3d[:, 2].numpy()
-
-        if tokens is not None:
-            colors = tokens.detach().cpu().flatten()[: coords3d.size(0)].numpy()
-        else:
-            colors = torch.arange(coords3d.size(0)).numpy()
-
-        self.ax.cla()
-        self.ax.scatter(xs, ys, zs, c=colors, cmap="viridis", s=16, alpha=0.85)
-        self.ax.set_xlabel("x")
-        self.ax.set_ylabel("y")
-        self.ax.set_zlabel("z")
-        self.ax.set_title(title or "Latent coordinates")
-        plt.draw()
-        plt.pause(0.01)
 
 
 @torch.no_grad()
@@ -232,13 +179,7 @@ def main():
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
     criterion = nn.CrossEntropyLoss()
     mask = build_causal_mask(block_size, device)
-    visualizer = None
-    if vis_interval and vis_interval > 0:
-        try:
-            visualizer = LatentVisualizer(coord_dim=coord_dim, max_points=block_size)
-        except Exception as exc:
-            print(f"Visualization disabled: {exc}")
-            vis_interval = 0
+    writer = SummaryWriter(log_dir="runs/hgt_experiment")
 
     start_step = 0
     best_val = float("inf")
@@ -263,6 +204,7 @@ def main():
         logits, z = model(x, mask=mask, return_last_coords=True)
         task_loss = criterion(logits.view(-1, vocab_size), y.view(-1))
         rep_loss = compute_repulsion_loss(z)
+        rep_loss_item = float(rep_loss.detach())
         loss = task_loss + lambda_repulsion * rep_loss
 
         optimizer.zero_grad(set_to_none=True)
@@ -270,11 +212,14 @@ def main():
         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
 
-        if visualizer and (step + 1) % vis_interval == 0:
-            visualizer.update(
-                z,
-                tokens=x,
-                title=f"Latent coordinates @ step {step + 1}",
+        if vis_interval and vis_interval > 0 and (step + 1) % vis_interval == 0:
+            flat_z = z.detach().reshape(-1, z.size(-1))
+            tokens_flat = x.detach().reshape(-1)
+            tokens_text = [itos[int(tok)] if int(tok) in itos else "<unk>" for tok in tokens_flat]
+            writer.add_embedding(
+                mat=flat_z,
+                metadata=tokens_text,
+                global_step=step + 1,
             )
 
         if (step + 1) % eval_interval == 0:
@@ -305,6 +250,9 @@ def main():
                 f"rep_loss={rep_loss:.4f} "
                 f"elapsed={elapsed:.1f}s"
             )
+            writer.add_scalar("loss/train", train_loss, step + 1)
+            writer.add_scalar("loss/val", val_loss, step + 1)
+            writer.add_scalar("loss/repulsion", rep_loss_item, step + 1)
 
             if val_loss < best_val:
                 best_val = val_loss
@@ -349,6 +297,7 @@ def main():
         },
         last_checkpoint_path,
     )
+    writer.close()
 
 
 if __name__ == "__main__":
