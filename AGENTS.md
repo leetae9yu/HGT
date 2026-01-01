@@ -97,10 +97,27 @@ This document defines the autonomous agents and personas operating within the HG
         -   Visualize mass as point size.
         -   Use `matplotlib.animation` to generate a video showing the "gravity" at work as semantically related words form clusters.
 
+#### **Phase 10: Legacy Support & Inference Restoration**
+
+**[Gemini]**
+1.  **Fix `chat.py` & Model Loading (Checkpoint Compatibility)**:
+    -   **Issue**: `RuntimeError` in `chat.py` due to architecture divergence (`mass_emb` missing, `coord_proj_next` shape mismatch).
+    -   **Constraint**: Local retraining is not possible; must support existing checkpoints.
+    -   **Action**:
+        -   Update `chat.py` to handle state dictionary loading robustly.
+        -   **Missing Keys**: Allow `strict=False`. Initialize `mass_emb` with neutral values (mass = 1.0) if missing.
+        -   **Shape Mismatch**: Detect if `coord_proj_next` weights in checkpoint match `[coord_dim, coord_dim]` (legacy) instead of `[coord_dim, hidden_dim]` (current).
+        -   **Patch**: If legacy weights are detected, dynamically swap the `coord_proj_next` layer in the model instance to `nn.Linear(coord_dim, coord_dim)` before loading weights, ensuring the old checkpoint works for inference.
+
 
 ---
 
 ## Agent Logs
+
+### [Gemini] Plan Update
+**Date**: 2026-01-01
+**Action**: Added Phase 10 to resolve `RuntimeError` in `chat.py`.
+**Rationale**: The current checkpoint is from an older architecture version. Since local training is hardware-constrained, we must implement a compatibility layer to allow inference with legacy weights.
 
 ### [Gemini] Plan Update
 **Date**: 2025-12-31

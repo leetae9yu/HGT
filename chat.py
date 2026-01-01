@@ -1,3 +1,4 @@
+import math
 import os
 
 import torch
@@ -16,6 +17,17 @@ def encode(text, stoi, fallback_token):
 
 def decode(tokens, itos):
     return "".join(itos[i] for i in tokens)
+
+def is_legacy_coord_proj(state_dict, coord_dim, hidden_dim):
+    """
+    Detect older checkpoints where coord_proj_next was Linear(coord_dim, coord_dim).
+    """
+    for name, tensor in state_dict.items():
+        if name.endswith("attn.coord_proj_next.weight"):
+            # Legacy: weight shape [coord_dim, coord_dim]; Current: [coord_dim, hidden_dim]
+            if tensor.shape[1] == coord_dim and tensor.shape[1] != hidden_dim:
+                return True
+    return False
 
 
 @torch.no_grad()
@@ -51,18 +63,40 @@ def main():
     stoi = vocab["stoi"]
     itos = vocab["itos"]
     vocab_size = config["vocab_size"]
+    hidden_dim = config["hidden_dim"]
+    coord_dim = config["coord_dim"]
 
     model = HierarchicalGravityTransformer(
         num_tokens=vocab_size,
-        hidden_dim=config["hidden_dim"],
-        coord_dim=config["coord_dim"],
+        hidden_dim=hidden_dim,
+        coord_dim=coord_dim,
         num_layers=config["num_layers"],
         num_heads=config["num_heads"],
         mlp_dim=config["mlp_dim"],
         max_seq_len=config["max_seq_len"],
         dropout=config["dropout"],
     ).to(device)
-    model.load_state_dict(checkpoint["model_state"])
+    state_dict = checkpoint["model_state"]
+
+    # Handle legacy coord_proj_next shape
+    if is_legacy_coord_proj(state_dict, coord_dim=coord_dim, hidden_dim=hidden_dim):
+        for layer in model.layers:
+            layer.attn.coord_proj_next = torch.nn.Linear(coord_dim, coord_dim).to(device)
+        print("Detected legacy coord_proj_next; swapped to compatible layers.")
+
+    # Load with strict=False to tolerate missing legacy keys
+    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+    if missing_keys:
+        print(f"Missing keys during load (handled with defaults): {missing_keys}")
+    if unexpected_keys:
+        print(f"Unexpected keys ignored during load: {unexpected_keys}")
+
+    # If legacy checkpoint lacks mass embeddings, initialize them to yield mass ~1.0
+    has_mass_weights = any(k.startswith("mass_emb.") for k in state_dict.keys())
+    if not has_mass_weights:
+        neutral_mass = math.log(math.expm1(1.0))  # inverse softplus for target mass=1
+        model.mass_emb.weight.data.fill_(neutral_mass)
+        print("Initialized mass_emb to neutral mass (1.0) for legacy checkpoint.")
 
     block_size = config["max_seq_len"]
     fallback_token = stoi.get(" ", 0)
