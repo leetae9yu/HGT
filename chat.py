@@ -50,8 +50,23 @@ def generate(model, idx, max_new_tokens, block_size, device, temperature=1.0, to
     return idx
 
 
+import argparse
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Chat with HGT model.")
+    parser.add_argument(
+        "--checkpoint-path", 
+        type=str, 
+        default=os.path.join("checkpoints", "shakespeare.pt"),
+        help="Path to the model checkpoint file."
+    )
+    return parser.parse_args()
+
+
 def main():
-    checkpoint_path = os.path.join("checkpoints", "shakespeare.pt")
+    args = parse_args()
+    checkpoint_path = args.checkpoint_path
+    
     if not os.path.exists(checkpoint_path):
         print(f"Checkpoint not found: {checkpoint_path}")
         return

@@ -109,10 +109,22 @@ This document defines the autonomous agents and personas operating within the HG
         -   **Shape Mismatch**: Detect if `coord_proj_next` weights in checkpoint match `[coord_dim, coord_dim]` (legacy) instead of `[coord_dim, hidden_dim]` (current).
         -   **Patch**: If legacy weights are detected, dynamically swap the `coord_proj_next` layer in the model instance to `nn.Linear(coord_dim, coord_dim)` before loading weights, ensuring the old checkpoint works for inference.
 
+2.  **Add Argument Parsing to `chat.py`**:
+    -   **Issue**: `chat.py` hardcodes the checkpoint path, ignoring command-line arguments.
+    -   **Action**:
+        -   Implement `argparse` in `chat.py`.
+        -   Add `--checkpoint-path` argument (default: `checkpoints/shakespeare.pt`).
+        -   Ensure the script uses the provided path.
+
 
 ---
 
 ## Agent Logs
+
+### [Gemini] Plan Update
+**Date**: 2026-01-01
+**Action**: Added task to Phase 10: "Add Argument Parsing to `chat.py`".
+**Rationale**: Users need to specify custom checkpoint paths (e.g., `_best.pt`), but the current script relies on a hardcoded path.
 
 ### [Gemini] Plan Update
 **Date**: 2026-01-01
